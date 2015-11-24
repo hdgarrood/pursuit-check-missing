@@ -40,7 +40,7 @@ type PackageDetails =
   }
 
 main = launchAff do
-  pkgList <- take 3 <$> getPackageList
+  pkgList <- getPackageList
   error (show (length pkgList) <> " packages to process")
 
   missing <- traverse (\pkg -> Tuple pkg <$> getMissing pkg) pkgList
@@ -141,7 +141,7 @@ trySubmit pkg vers = do
   pscPublish = run "psc-publish" []
   pursuitSubmit token json = do
     r <- affjax $ defaultRequest
-          { url = "http://localhost/packages"
+          { url = "http://pursuit.purescript.org/packages"
           , method = POST
           , headers = [ Accept (MimeType "application/json")
                       , RequestHeader "Authorization" ("token " <> token)
