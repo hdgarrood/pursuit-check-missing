@@ -13,7 +13,7 @@ import Data.Foldable
 import Data.Traversable
 import Data.Foreign
 import Data.Foreign.Class
-import Control.Monad.Error.Class (throwError)
+import Control.Monad.Error.Class
 import Control.Monad.Eff
 import Control.Monad.Eff.Class (liftEff)
 import qualified Control.Monad.Eff.Exception as Exception
@@ -39,9 +39,13 @@ main = launchAff do
 
   packages <- traverse getPursuitAndBowerVersions pkgList
 
-  packages' <- traverse (\pkg -> Tuple pkg <$> checkDetails pkg) packages
+  packages' <- traverse (\pkg -> ({ name: pkg.name, missing: _ } <<< map showVersion) <$> checkDetails pkg) packages
 
-  log (unsafeCoerce packages')
+  log (toJSON packages')
+
+  where
+  toJSON :: Array ({ name :: String, missing :: Array String }) -> String
+  toJSON = yoloStringify
 
 getPackageList :: Aff _ (Array String)
 getPackageList = do
@@ -53,10 +57,10 @@ getPackageList = do
 
 getPursuitAndBowerVersions :: String -> Aff _ PackageDetails
 getPursuitAndBowerVersions pkg = do
-  Tuple pursuit bower <- runPar (Tuple <$> Par (getPursuitVersions pkg)
-                                       <*> Par (getBowerVersions pkg))
+  pursuit <- getPursuitVersions pkg
   when (null pursuit)
     (err (pkg <> " had no available versions on pursuit."))
+  bower <- getBowerVersions pkg
   pure $ { name: pkg, pursuitVersions: pursuit, bowerVersions: bower } 
 
 getPursuitVersions :: String -> Aff _ (Array Version)
@@ -83,7 +87,7 @@ getPursuitVersions pkg = do
         err ("Array was the wrong shape (expected two elements): " <> show arr)
 
 getBowerVersions :: String -> Aff _ (Array Version)
-getBowerVersions pkg = do
+getBowerVersions pkg = flip catchError (\(_ :: Exception.Error) -> pure []) do
   res <- runProcess "bower" ["info", pkg, "--json"]
   versions <- rightOrThrow (parseJSON res.stdout >>= readProp "versions")
   rightOrThrow $ traverse parseVersion versions
@@ -109,6 +113,8 @@ foreign import runProcessEff :: forall e.
 -- | Run a process and get stdout and stderr.
 runProcess :: String -> Array String -> Aff _ { stdout :: String, stderr :: String }
 runProcess cmd args = makeAff (runProcessEff cmd args)
+
+foreign import yoloStringify :: forall a. a -> String
 
 err :: forall a. String -> Aff _ a
 err = throwError <<< Exception.error
