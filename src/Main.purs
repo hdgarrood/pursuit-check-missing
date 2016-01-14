@@ -168,10 +168,13 @@ getRepository pkg vers = do
 run :: String -> Array String -> Aff _ String
 run cmd args =
   makeAff \err done ->
-    ChildProcess.execFile cmd args ChildProcess.defaultExecOptions \r ->
+    ChildProcess.execFile cmd args opts \r ->
       case r.error of
         Just e -> err e
         Nothing -> Buffer.toString UTF8 r.stdout >>= done
+  where
+  opts = ChildProcess.defaultExecOptions { maxBuffer = Just fiveMegs }
+  fiveMegs = 1024 * 1024 * 5
 
 foreign import cd :: forall e. String -> Eff e Unit
 
