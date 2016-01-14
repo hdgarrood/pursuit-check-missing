@@ -18,8 +18,8 @@ import Data.Foreign.Class
 import Control.Monad.Error.Class
 import Control.Monad.Eff
 import Control.Monad.Eff.Class (liftEff)
-import qualified Control.Monad.Eff.Exception as Exception
-import qualified Control.Monad.Eff.Console as EffConsole
+import Control.Monad.Eff.Exception as Exception
+import Control.Monad.Eff.Console as EffConsole
 import Control.Monad.Aff
 import Control.Monad.Aff.AVar
 import Control.Monad.Aff.Par
@@ -29,9 +29,12 @@ import Network.HTTP.RequestHeader
 import Network.HTTP.MimeType (MimeType(..))
 import Network.HTTP.Method
 import Network.HTTP.StatusCode
+import Node.ChildProcess (ChildProcess(), CHILD_PROCESS())
+import Node.ChildProcess as ChildProcess
 import Node.Encoding
+import Node.Buffer as Buffer
 import Node.FS.Aff
-import Unsafe.Coerce
+import Unsafe.Coerce (unsafeCoerce)
 
 type PackageDetails =
   { name :: String
@@ -106,8 +109,8 @@ getPursuitVersions pkg = do
 
 getBowerVersions :: String -> Aff _ (Array Version)
 getBowerVersions pkg = flip catchError (\(_ :: Exception.Error) -> pure []) do
-  res <- runProcess "bower" ["info", pkg, "--json"]
-  versions <- rightOrThrow (parseJSON res.stdout >>= readProp "versions")
+  json <- run "bower" ["info", pkg, "--json"]
+  versions <- rightOrThrow (parseJSON json >>= readProp "versions")
   rightOrThrow $ traverse parseVersion versions
 
 checkDetails :: PackageDetails -> Aff _ (Array Version)
@@ -161,20 +164,14 @@ getRepository pkg vers = do
   json <- run "bower" ["info", pkg <> "#" <> showVersion vers, "--json"]
   rightOrThrow (parseJSON json >>= readProp "repository" >>= readProp "url")
 
-foreign import runProcessEff :: forall e.
-  String
-  -> Array String
-  -> (Exception.Error -> Eff e Unit)
-  -> ({ stdout :: String, stderr :: String } -> Eff e Unit)
-  -> Eff e Unit
-
--- | Run a process and get stdout and stderr.
-runProcess :: String -> Array String -> Aff _ { stdout :: String, stderr :: String }
-runProcess cmd args = makeAff (runProcessEff cmd args)
-
--- | Just get stdout.
+-- | Run a command and args, and get stdout.
 run :: String -> Array String -> Aff _ String
-run cmd args = _.stdout <$> runProcess cmd args
+run cmd args =
+  makeAff \err done ->
+    ChildProcess.execFile cmd args ChildProcess.defaultExecOptions \r ->
+      case r.error of
+        Just e -> err e
+        Nothing -> Buffer.toString UTF8 r.stdout >>= done
 
 foreign import cd :: forall e. String -> Eff e Unit
 
