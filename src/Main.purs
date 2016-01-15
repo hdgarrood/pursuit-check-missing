@@ -131,6 +131,9 @@ trySubmit :: String -> Version -> Aff _ Unit
 trySubmit pkg vers = do
   repo <- getRepository pkg vers
   let tmpdir = getTmpDir pkg vers
+  doesExist <- exists tmpdir
+  when doesExist
+    (void (run "rm" ["-r", tmpdir]))
   _ <- gitClone repo tmpdir
   cd tmpdir
   _ <- gitCheckout (showVersion vers) <|> gitCheckout ("v" <> showVersion vers)
