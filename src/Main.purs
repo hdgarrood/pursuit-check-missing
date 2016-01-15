@@ -18,6 +18,7 @@ import Data.Foreign.Class
 import Control.Monad.Error.Class
 import Control.Monad.Eff
 import Control.Monad.Eff.Class (liftEff)
+import Control.Monad.Eff.Exception (EXCEPTION())
 import Control.Monad.Eff.Exception as Exception
 import Control.Monad.Eff.Console as EffConsole
 import Control.Monad.Aff
@@ -29,8 +30,9 @@ import Network.HTTP.RequestHeader
 import Network.HTTP.MimeType (MimeType(..))
 import Network.HTTP.Method
 import Network.HTTP.StatusCode
-import Node.ChildProcess (ChildProcess(), CHILD_PROCESS())
 import Node.ChildProcess as ChildProcess
+import Node.Process (PROCESS())
+import Node.Process as Process
 import Node.Encoding
 import Node.Buffer as Buffer
 import Node.FS.Aff
@@ -42,7 +44,7 @@ type PackageDetails =
   , bowerVersions :: Array Version
   }
 
-main = launchAff do
+main = runAff EffConsole.print EffConsole.print do
   pkgList <- getPackageList
   error (show (length pkgList) <> " packages to process")
 
@@ -58,9 +60,9 @@ main = launchAff do
 
   where
   submitErr :: String -> Version -> Exception.Error -> Aff _ Unit
-  submitErr pkg v err = do
+  submitErr pkg v e = do
     error $ "Error while trying to submit " <> show pkg <> " at " <> showVersion v <> ":"
-    error $ unsafeCoerce err
+    error $ unsafeCoerce e
 
 getPackageList :: Aff _ (Array String)
 getPackageList = do
@@ -129,7 +131,7 @@ trySubmit pkg vers = do
   repo <- getRepository pkg vers
   let tmpdir = getTmpDir pkg vers
   _ <- gitClone repo tmpdir
-  cd' tmpdir
+  cd tmpdir
   _ <- gitCheckout (showVersion vers) <|> gitCheckout ("v" <> showVersion vers)
   _ <- bowerInstall
   json <- pscPublish
@@ -167,19 +169,17 @@ getRepository pkg vers = do
 -- | Run a command and args, and get stdout.
 run :: String -> Array String -> Aff _ String
 run cmd args =
-  makeAff \err done ->
+  makeAff \err' done ->
     ChildProcess.execFile cmd args opts \r ->
       case r.error of
-        Just e -> err e
+        Just e -> err' e
         Nothing -> Buffer.toString UTF8 r.stdout >>= done
   where
   opts = ChildProcess.defaultExecOptions { maxBuffer = Just fiveMegs }
   fiveMegs = 1024 * 1024 * 5
 
-foreign import cd :: forall e. String -> Eff e Unit
-
-cd' :: forall e. String -> Aff e Unit
-cd' dir = makeAff (\_ done -> cd dir >>= done)
+cd :: forall e. String -> Aff (process :: PROCESS, err :: EXCEPTION | e) Unit
+cd dir = liftEff (Process.chdir dir)
 
 foreign import yoloStringify :: forall a. a -> String
 
