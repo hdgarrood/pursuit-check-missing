@@ -136,7 +136,7 @@ trySubmit pkg vers = do
   _ <- gitCheckout (showVersion vers) <|> gitCheckout ("v" <> showVersion vers)
   _ <- bowerInstall
   json <- pscPublish
-  home <- envHome'
+  home <- envHome
   token <- readTextFile UTF8 (home <> "/.pulp/github-oauth-token")
   pursuitSubmit token json
   where
@@ -182,10 +182,10 @@ run cmd args =
 cd :: forall e. String -> Aff (process :: PROCESS, err :: EXCEPTION | e) Unit
 cd dir = liftEff (Process.chdir dir)
 
-foreign import envHome :: forall e. Eff e String
-
-envHome' :: Aff _ String
-envHome' = makeAff (\_ done -> envHome >>= done)
+envHome :: forall e. Aff (process :: PROCESS | e) String
+envHome =
+  liftEff (Process.lookupEnv "HOME")
+    >>= maybe (err "HOME env var is not defined") pure
 
 err :: forall a. String -> Aff _ a
 err = throwError <<< Exception.error
