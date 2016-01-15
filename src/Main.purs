@@ -25,6 +25,7 @@ import Control.Monad.Aff
 import Control.Monad.Aff.AVar
 import Control.Monad.Aff.Par
 import Control.Monad.Aff.Console
+import Global.Unsafe (unsafeStringify)
 import Network.HTTP.Affjax (affjax, defaultRequest)
 import Network.HTTP.RequestHeader
 import Network.HTTP.MimeType (MimeType(..))
@@ -76,7 +77,7 @@ getMissing :: String -> Aff _ (Array Version)
 getMissing = getPursuitAndBowerVersions >=> checkDetails
 
 missingToJSON :: Array (Tuple String (Array Version)) -> String
-missingToJSON = map (\t -> { name: fst t, missing: map showVersion (snd t) }) >>> yoloStringify
+missingToJSON = map (\t -> { name: fst t, missing: map showVersion (snd t) }) >>> unsafeStringify
 
 getPursuitAndBowerVersions :: String -> Aff _ PackageDetails
 getPursuitAndBowerVersions pkg = do
@@ -180,8 +181,6 @@ run cmd args =
 
 cd :: forall e. String -> Aff (process :: PROCESS, err :: EXCEPTION | e) Unit
 cd dir = liftEff (Process.chdir dir)
-
-foreign import yoloStringify :: forall a. a -> String
 
 foreign import envHome :: forall e. Eff e String
 
