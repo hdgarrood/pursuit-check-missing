@@ -113,7 +113,7 @@ getPursuitVersions pkg = do
 getBowerVersions :: String -> Aff _ (Array Version)
 getBowerVersions pkg = flip catchError (\(_ :: Exception.Error) -> pure []) do
   json <- run "bower" ["info", pkg, "--json"]
-  versions <- rightOrThrow (parseJSON json >>= readProp "versions")
+  versions <- rightOrThrow (parseJSON json) >>= readProp' "versions"
   rightOrThrow $ traverse parseVersion versions
 
 checkDetails :: PackageDetails -> Aff _ (Array Version)
@@ -168,7 +168,7 @@ trySubmit pkg vers = do
 getRepository :: String -> Version -> Aff _ String
 getRepository pkg vers = do
   json <- run "bower" ["info", pkg <> "#" <> showVersion vers, "--json"]
-  rightOrThrow (parseJSON json >>= readProp "repository" >>= readProp "url")
+  rightOrThrow (parseJSON json) >>= readProp' "repository" >>= readProp' "url"
 
 -- | Run a command and args, and get stdout.
 run :: String -> Array String -> Aff _ String
@@ -198,6 +198,12 @@ rightOrThrow = either (err <<< ("rightOrThrow: " <>) <<< show) pure
 
 readOrThrow :: forall a. (IsForeign a) => Foreign -> Aff _ a
 readOrThrow = rightOrThrow <<< read
+
+readProp' :: forall a. (IsForeign a) => String -> Foreign -> Aff _ a
+readProp' prop f =
+  case readProp prop f of
+    Right val -> pure val
+    Left e -> err ("readProp': failed to read " <> prop <> ": " <> show e)
 
 error :: forall e. String -> Aff (console :: EffConsole.CONSOLE | e) Unit
 error = liftEff <<< EffConsole.error
