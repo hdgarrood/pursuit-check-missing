@@ -11,8 +11,10 @@ import Data.Maybe
 import Data.Version (Version(), parseVersion, showVersion)
 import Data.String (split, trim)
 import Data.Array (head, sort, catMaybes, take, length, null, (\\), filter)
+import Data.StrMap as StrMap
 import Data.Foldable
 import Data.Traversable
+import Data.Bifunctor (lmap)
 import Data.Foreign
 import Data.Foreign.Class
 import Control.Monad.Error.Class
@@ -39,22 +41,53 @@ import Node.Buffer as Buffer
 import Node.FS.Aff
 import Unsafe.Coerce (unsafeCoerce)
 
-type PackageDetails =
-  { name :: String
-  , pursuitVersions :: Array Version
-  , bowerVersions :: Array Version
-  }
+main = runAff (EffConsole.error <<< show) (const (Process.exit 0)) do
+  restorePursuitPackages
 
-main = runAff EffConsole.print EffConsole.print do
+-- | Useful for recording all the packages which are on pursuit and their
+-- | versions.
+jsonEncodePursuitPackages :: Array (Tuple String (Array Version)) -> String
+jsonEncodePursuitPackages = unsafeStringify <<< map encode
+  where
+  encode :: Tuple String (Array Version) -> Foreign
+  encode (Tuple pkg versions) =
+    toForeign $
+      StrMap.fromFoldable
+        [ Tuple "packageName" (toForeign pkg)
+        , Tuple "versions" (toForeign (map showVersion versions))
+        ]
+
+jsonDecodePursuitPackages :: String -> F (Array (Tuple String (Array Version)))
+jsonDecodePursuitPackages = parseJSON >=> readArray >=> traverse go
+  where
+  go :: Foreign -> F (Tuple String (Array Version))
+  go obj = do
+    pkgName <- readProp "packageName" obj
+    versions <- readProp "versions" obj
+                  >>= traverse (parseVersion >>> lmap (show >>> JSONError))
+    pure (Tuple pkgName versions)
+
+-- Get details of all packages in pursuit and print to stdout. This was part 1
+-- of how we migrated the pursuit data to the new format after psc 0.8 was
+-- released (which changed the serialization format).
+logAllPursuitPackages = do
   pkgList <- getPackageList
-  error (show (length pkgList) <> " packages to process")
+  pursuitPkgs <- traverse (\pkg -> Tuple pkg <$> getPursuitVersions pkg) pkgList
+  log (jsonEncodePursuitPackages pursuitPkgs)
 
-  missing <- traverse (\pkg -> Tuple pkg <$> getMissing pkg) pkgList
+-- Restore from a `logAllPursuitPackages`. Part 2 of the 0.7->0.8 migration
+-- (see logAllPursuitPackages)
+restorePursuitPackages = do
+  json <- readTextFile UTF8 "out.json"
+  pkgs <- case jsonDecodePursuitPackages json of
+              Right ps -> pure ps
+              Left err -> throwError (Exception.error (show err))
 
-  -- write missing package details to stdout
-  -- log (missingToJSON missing)
+  submitAll pkgs
 
-  for_ missing $ \(Tuple pkg versions) ->
+submitAll :: Array (Tuple String (Array Version)) -> Aff _ Unit
+submitAll pkgs = do
+  for_ pkgs $ \(Tuple pkg versions) ->
     for_ versions $ \version -> do
       error $ "Attempting to submit " <> pkg <> " at " <> showVersion version
       flip catchError (submitErr pkg version) $ trySubmit pkg version
@@ -65,10 +98,30 @@ main = runAff EffConsole.print EffConsole.print do
     error $ "Error while trying to submit " <> show pkg <> " at " <> showVersion v <> ":"
     error $ unsafeCoerce e
 
+-- Compare published versions on pursuit and bower, and add any newer released
+-- versions of packages which are on Bower, but have not yet been uploaded to
+-- Pursuit.
+fixMissing = do
+  pkgList <- getPackageList
+  error (show (length pkgList) <> " packages to process")
+
+  missing <- traverse (\pkg -> Tuple pkg <$> getMissing pkg) pkgList
+
+  -- write missing package details to stdout
+  -- log (missingToJSON missing)
+
+  submitAll missing
+
+type PackageDetails =
+  { name :: String
+  , pursuitVersions :: Array Version
+  , bowerVersions :: Array Version
+  }
+
 getPackageList :: Aff _ (Array String)
 getPackageList = do
   resp <- affjax $ defaultRequest
-                    { url     = "http://pursuit.purescript.org/packages"
+                    { url     = "https://pursuit.purescript.org/packages"
                     , headers = [ Accept (MimeType "application/json") ]
                     }
   readOrThrow resp.response
@@ -99,7 +152,7 @@ getPursuitVersions pkg = do
 
   where
   availableVersionsUrl p =
-    "http://pursuit.purescript.org/packages/" <> p <> "/available-versions"
+    "https://pursuit.purescript.org/packages/" <> p <> "/available-versions"
 
   parse arr =
     case arr of
@@ -150,7 +203,7 @@ trySubmit pkg vers = do
   pscPublish = run "psc-publish" []
   pursuitSubmit token json = do
     r <- affjax $ defaultRequest
-          { url = "http://pursuit.purescript.org/packages"
+          { url = "https://pursuit.purescript.org/packages"
           , method = POST
           , headers = [ Accept (MimeType "application/json")
                       , RequestHeader "Authorization" ("token " <> token)
