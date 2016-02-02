@@ -11,10 +11,11 @@ import Data.Maybe
 import Data.Version (Version(), parseVersion, showVersion)
 import Data.String (split, trim)
 import Data.Array (head, sort, catMaybes, take, length, null, (\\), filter)
+import Data.Array as Array
 import Data.StrMap as StrMap
 import Data.Foldable
 import Data.Traversable
-import Data.Bifunctor (lmap)
+import Data.Bifunctor (lmap, rmap)
 import Data.Foreign
 import Data.Foreign.Class
 import Control.Monad.Error.Class
@@ -42,7 +43,15 @@ import Node.FS.Aff
 import Unsafe.Coerce (unsafeCoerce)
 
 main = runAff (EffConsole.error <<< show) (const (Process.exit 0)) do
-  restorePursuitPackages
+  json <- readTextFile UTF8 "out.json"
+  beforePkgs <- flatten <$> rightOrThrow (jsonDecodePursuitPackages json)
+  afterPkgs <- flatten <$> getAllPursuitPackages
+
+  let missing = filter (`notElem` afterPkgs) beforePkgs
+  submitAll (map (rmap Array.singleton) missing)
+
+  where
+  flatten = Array.concatMap \(Tuple pkgName versions) -> Tuple pkgName <$> versions
 
 -- | Useful for recording all the packages which are on pursuit and their
 -- | versions.
@@ -71,18 +80,20 @@ jsonDecodePursuitPackages = parseJSON >=> readArray >=> traverse go
 -- of how we migrated the pursuit data to the new format after psc 0.8 was
 -- released (which changed the serialization format).
 logAllPursuitPackages = do
-  pkgList <- getPackageList
-  pursuitPkgs <- traverse (\pkg -> Tuple pkg <$> getPursuitVersions pkg) pkgList
+  pursuitPkgs <- getAllPursuitPackages
   log (jsonEncodePursuitPackages pursuitPkgs)
+
+-- Get all pursuit packages with their versions.
+getAllPursuitPackages :: Aff _ (Array (Tuple String (Array Version)))
+getAllPursuitPackages = do
+  pkgList <- getPackageList
+  traverse (\pkg -> Tuple pkg <$> getPursuitVersions pkg) pkgList
 
 -- Restore from a `logAllPursuitPackages`. Part 2 of the 0.7->0.8 migration
 -- (see logAllPursuitPackages)
 restorePursuitPackages = do
   json <- readTextFile UTF8 "out.json"
-  pkgs <- case jsonDecodePursuitPackages json of
-              Right ps -> pure ps
-              Left err -> throwError (Exception.error (show err))
-
+  pkgs <- rightOrThrow (jsonDecodePursuitPackages json)
   submitAll pkgs
 
 submitAll :: Array (Tuple String (Array Version)) -> Aff _ Unit
