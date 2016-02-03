@@ -43,15 +43,15 @@ import Node.FS.Aff
 import Unsafe.Coerce (unsafeCoerce)
 
 main = runAff (EffConsole.error <<< show) (const (Process.exit 0)) do
-  json <- readTextFile UTF8 "out.json"
-  beforePkgs <- flatten <$> rightOrThrow (jsonDecodePursuitPackages json)
-  afterPkgs <- flatten <$> getAllPursuitPackages
+ submitAllBowerVersionsFromFile "missing-completely.txt"
 
-  let missing = filter (`notElem` afterPkgs) beforePkgs
-  submitAll (map (rmap Array.singleton) missing)
-
-  where
-  flatten = Array.concatMap \(Tuple pkgName versions) -> Tuple pkgName <$> versions
+-- Given a plain text file of package names, attempt to submit all registered
+-- bower versions of each package in the file.
+submitAllBowerVersionsFromFile filepath = do
+  pkgNames <- split "\n" <$> readTextFile UTF8 filepath
+  log (show (Array.length pkgNames) <> " packages to process")
+  pkgs <- traverse (\pkg -> Tuple pkg <$> getBowerVersions pkg) pkgNames
+  submitAll pkgs
 
 -- | Useful for recording all the packages which are on pursuit and their
 -- | versions.
