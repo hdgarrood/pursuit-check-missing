@@ -8,14 +8,17 @@ import Control.Alt
 import Data.Tuple
 import Data.Either
 import Data.Maybe
+import Data.List as List
 import Data.Version (Version(), parseVersion, showVersion)
 import Data.String (split, trim)
 import Data.Array (head, sort, catMaybes, take, length, null, (\\), filter)
 import Data.Array as Array
+import Data.StrMap (StrMap)
 import Data.StrMap as StrMap
 import Data.Foldable
 import Data.Traversable
 import Data.Bifunctor (lmap, rmap)
+import Data.Profunctor.Strong (first, second)
 import Data.Foreign
 import Data.Foreign.Class
 import Control.Monad.Error.Class
@@ -43,10 +46,42 @@ import Node.FS.Aff
 import Unsafe.Coerce (unsafeCoerce)
 
 main = runAff (EffConsole.error <<< show) (const (Process.exit 0)) do
- submitAllBowerVersionsFromFile "missing-completely.txt"
+  jsonCurrent <- readTextFile UTF8 "current-packages.json"
+  jsonPrevious <- readTextFile UTF8 "previous-packages.json"
+
+  currentPkgs <- flatten <$> rightOrThrow (jsonDecodePursuitPackages jsonCurrent)
+  previousPkgs <- flatten <$> jsonDecodePursuitPackages2 jsonPrevious
+
+  submitAll $ unflatten $
+    filter (`notElem` currentPkgs) previousPkgs
+
+  where
+  unflatten = map (second Array.singleton)
+
+printAll :: Array (Tuple String Version) -> Aff _ Unit
+printAll = traverse_ (log <<< showPackageVersion)
+
+showPackageVersion :: Tuple String Version -> String
+showPackageVersion (Tuple pkg v) =
+  pkg <> " " <> showVersion v
+
+-- Given a JSON file path containing an object mapping package names to arrays
+-- of versions, query Pursuit and print a list of package versions in the
+-- provided JSON which are not on Pursuit.
+compareUploaded :: String -> Aff _ Unit
+compareUploaded filepath = do
+  json <- readTextFile UTF8 filepath
+  filePkgs <- flatten <$> jsonDecodePursuitPackages2 json
+  pursuitPkgs <- flatten <$> getAllPursuitPackages
+
+  traverse_ print (filter (`notElem` pursuitPkgs) filePkgs)
+
+flatten :: forall a b. Array (Tuple a (Array b)) -> Array (Tuple a b)
+flatten = Array.concatMap \(Tuple a b) -> Tuple a <$> b
 
 -- Given a plain text file of package names, attempt to submit all registered
 -- bower versions of each package in the file.
+submitAllBowerVersionsFromFile :: String -> Aff _ Unit
 submitAllBowerVersionsFromFile filepath = do
   pkgNames <- split "\n" <$> readTextFile UTF8 filepath
   log (show (Array.length pkgNames) <> " packages to process")
@@ -66,6 +101,8 @@ jsonEncodePursuitPackages = unsafeStringify <<< map encode
         , Tuple "versions" (toForeign (map showVersion versions))
         ]
 
+-- Decode JSON packages in the form:
+-- [{packageName: "purescript-foo", versions:["0.1.0",..]}]
 jsonDecodePursuitPackages :: String -> F (Array (Tuple String (Array Version)))
 jsonDecodePursuitPackages = parseJSON >=> readArray >=> traverse go
   where
@@ -75,6 +112,22 @@ jsonDecodePursuitPackages = parseJSON >=> readArray >=> traverse go
     versions <- readProp "versions" obj
                   >>= traverse (parseVersion >>> lmap (show >>> JSONError))
     pure (Tuple pkgName versions)
+
+-- Decode JSON packages in the form:
+-- [{"purescript-foo":["0.1.0",...]},...]
+--
+-- Yes, I know it's silly to have two different formats.
+jsonDecodePursuitPackages2 :: String -> Aff _ (Array (Tuple String (Array Version)))
+jsonDecodePursuitPackages2 json = do
+  f <- rightOrThrow (parseJSON json)
+  let pkgs = List.toUnfoldable (StrMap.toList (coerceStrMap f))
+  pure (map (\(Tuple p vs) -> Tuple p (Array.mapMaybe tryParse vs)) pkgs)
+
+  where
+  tryParse = either (const Nothing) Just <<< parseVersion
+
+  coerceStrMap :: Foreign -> StrMap (Array String)
+  coerceStrMap = unsafeCoerce
 
 -- Get details of all packages in pursuit and print to stdout. This was part 1
 -- of how we migrated the pursuit data to the new format after psc 0.8 was

@@ -18,6 +18,7 @@
     "purescript-node-fs-aff": "~0.3.0",
     "purescript-aff": "~0.13.0",
     "purescript-node-child-process": "~0.5.1",
-    "purescript-node-process": "~0.4.1"
+    "purescript-node-process": "~0.4.1",
+    "purescript-profunctor": "^0.3.2"
   }
 }
