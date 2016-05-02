@@ -255,6 +255,8 @@ trySubmit pkg vers = do
   cd tmpdir
   _ <- gitCheckout (showVersion vers) <|> gitCheckout ("v" <> showVersion vers)
   _ <- bowerInstall
+  -- prevent failures from dirty working trees after 'bower install'
+  _ <- writeTextFile UTF8 (tmpdir <> "/.git/info/exclude") "/bower_components"
   json <- pscPublish
   home <- envHome
   token <- readTextFile UTF8 (home <> "/.pulp/github-oauth-token")
