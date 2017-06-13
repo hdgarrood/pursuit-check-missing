@@ -11,6 +11,7 @@ import Data.Maybe
 import Data.List as List
 import Data.Version (Version(), parseVersion, showVersion)
 import Data.String (split, trim, Pattern(..))
+import Data.String as String
 import Data.Array (head, sort, catMaybes, take, length, null, (\\), filter)
 import Data.Array as Array
 import Data.StrMap (StrMap)
@@ -48,17 +49,19 @@ import Node.Buffer as Buffer
 import Node.FS.Aff
 import Unsafe.Coerce (unsafeCoerce)
 
-main = do
-  pkgList <- map (split (Pattern "\n")) (readTextFile UTF8 "packages.txt")
+affMain = runAff (EffConsole.error <<< show) (const (Process.exit 0))
+
+main = affMain do
+  pkgList <- map (split (Pattern "\n") >>> map trim >>> filter (not <<< String.null)) (readTextFile UTF8 "packages.txt")
   error (show (length pkgList) <> " packages to process")
 
   missing <- traverse (\pkg -> Tuple pkg <$> getMissing pkg) pkgList
 
   -- write missing package details to stdout
-  -- log (missingToJSON missing)
+  log (missingToJSON missing)
 
-  submitAll missing
--- main = runAff (EffConsole.error <<< show) (const (Process.exit 0)) do
+  -- submitAll missing
+-- main = affMain do
 --   jsonCurrent <- readTextFile UTF8 "current-packages.json"
 --   jsonPrevious <- readTextFile UTF8 "previous-packages.json"
 -- 
