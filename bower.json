@@ -12,13 +12,16 @@
     "output"
   ],
   "dependencies": {
-    "purescript-console": "~0.1.1",
-    "purescript-versions": "~0.1.1",
-    "purescript-affjax": "~0.10.1",
-    "purescript-node-fs-aff": "~0.3.0",
-    "purescript-aff": "~0.13.0",
-    "purescript-node-child-process": "~0.5.1",
-    "purescript-node-process": "~0.4.1",
-    "purescript-profunctor": "^0.3.2"
+    "purescript-console": "~3.0.0",
+    "purescript-versions": "~4.0.0",
+    "purescript-affjax": "~4.0.0",
+    "purescript-node-fs-aff": "~4.0.0",
+    "purescript-aff": "~3.1.0",
+    "purescript-node-child-process": "~4.0.0",
+    "purescript-node-process": "~4.0.0",
+    "purescript-profunctor": "^3.1.0",
+    "purescript-http-methods": "^3.0.0",
+    "purescript-foreign-generic": "^4.1.0",
+    "purescript-media-types": "^3.0.0"
   }
 }

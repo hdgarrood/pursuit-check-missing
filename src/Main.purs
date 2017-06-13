@@ -10,7 +10,7 @@ import Data.Either
 import Data.Maybe
 import Data.List as List
 import Data.Version (Version(), parseVersion, showVersion)
-import Data.String (split, trim)
+import Data.String (split, trim, Pattern(..))
 import Data.Array (head, sort, catMaybes, take, length, null, (\\), filter)
 import Data.Array as Array
 import Data.StrMap (StrMap)
@@ -21,21 +21,24 @@ import Data.Bifunctor (lmap, rmap)
 import Data.Profunctor.Strong (first, second)
 import Data.Foreign
 import Data.Foreign.Class
+import Data.Foreign.Index
+import Data.Foreign.JSON
 import Control.Monad.Error.Class
 import Control.Monad.Eff
 import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Eff.Exception (EXCEPTION())
+import Control.Monad.Except.Trans
+import Control.Monad.Except
 import Control.Monad.Eff.Exception as Exception
 import Control.Monad.Eff.Console as EffConsole
 import Control.Monad.Aff
 import Control.Monad.Aff.AVar
-import Control.Monad.Aff.Par
 import Control.Monad.Aff.Console
 import Global.Unsafe (unsafeStringify)
 import Network.HTTP.Affjax (affjax, defaultRequest)
 import Network.HTTP.RequestHeader
-import Network.HTTP.MimeType (MimeType(..))
-import Network.HTTP.Method
+import Data.HTTP.Method (Method(..))
+import Data.MediaType (MediaType(..))
 import Network.HTTP.StatusCode
 import Node.ChildProcess as ChildProcess
 import Node.Process (PROCESS())
@@ -45,18 +48,28 @@ import Node.Buffer as Buffer
 import Node.FS.Aff
 import Unsafe.Coerce (unsafeCoerce)
 
-main = runAff (EffConsole.error <<< show) (const (Process.exit 0)) do
-  jsonCurrent <- readTextFile UTF8 "current-packages.json"
-  jsonPrevious <- readTextFile UTF8 "previous-packages.json"
+main = do
+  pkgList <- map (split (Pattern "\n")) (readTextFile UTF8 "packages.txt")
+  error (show (length pkgList) <> " packages to process")
 
-  currentPkgs <- flatten <$> rightOrThrow (jsonDecodePursuitPackages jsonCurrent)
-  previousPkgs <- flatten <$> jsonDecodePursuitPackages2 jsonPrevious
+  missing <- traverse (\pkg -> Tuple pkg <$> getMissing pkg) pkgList
 
-  submitAll $ unflatten $
-    filter (`notElem` currentPkgs) previousPkgs
+  -- write missing package details to stdout
+  -- log (missingToJSON missing)
 
-  where
-  unflatten = map (second Array.singleton)
+  submitAll missing
+-- main = runAff (EffConsole.error <<< show) (const (Process.exit 0)) do
+--   jsonCurrent <- readTextFile UTF8 "current-packages.json"
+--   jsonPrevious <- readTextFile UTF8 "previous-packages.json"
+-- 
+--   currentPkgs <- flatten <$> rightOrThrow (jsonDecodePursuitPackages jsonCurrent)
+--   previousPkgs <- flatten <$> jsonDecodePursuitPackages2 jsonPrevious
+-- 
+--   submitAll $ unflatten $
+--     filter (`notElem` currentPkgs) previousPkgs
+-- 
+--   where
+--   unflatten = map (second Array.singleton)
 
 printAll :: Array (Tuple String Version) -> Aff _ Unit
 printAll = traverse_ (log <<< showPackageVersion)
@@ -74,7 +87,7 @@ compareUploaded filepath = do
   filePkgs <- flatten <$> jsonDecodePursuitPackages2 json
   pursuitPkgs <- flatten <$> getAllPursuitPackages
 
-  traverse_ print (filter (`notElem` pursuitPkgs) filePkgs)
+  traverse_ logShow (filter (_ `notElem` pursuitPkgs) filePkgs)
 
 flatten :: forall a b. Array (Tuple a (Array b)) -> Array (Tuple a b)
 flatten = Array.concatMap \(Tuple a b) -> Tuple a <$> b
@@ -83,7 +96,7 @@ flatten = Array.concatMap \(Tuple a b) -> Tuple a <$> b
 -- bower versions of each package in the file.
 submitAllBowerVersionsFromFile :: String -> Aff _ Unit
 submitAllBowerVersionsFromFile filepath = do
-  pkgNames <- split "\n" <$> readTextFile UTF8 filepath
+  pkgNames <- split (Pattern "\n") <$> readTextFile UTF8 filepath
   log (show (Array.length pkgNames) <> " packages to process")
   pkgs <- traverse (\pkg -> Tuple pkg <$> getBowerVersions pkg) pkgNames
   submitAll pkgs
@@ -108,10 +121,16 @@ jsonDecodePursuitPackages = parseJSON >=> readArray >=> traverse go
   where
   go :: Foreign -> F (Tuple String (Array Version))
   go obj = do
-    pkgName <- readProp "packageName" obj
+    pkgName <- readProp "packageName" obj >>= readString
     versions <- readProp "versions" obj
-                  >>= traverse (parseVersion >>> lmap (show >>> JSONError))
+                  >>= readArray
+                  >>= traverse readVersion
     pure (Tuple pkgName versions)
+
+  readVersion :: Foreign -> F Version
+  readVersion =
+    readString >=>
+    \v -> ExceptT (pure (lmap (show >>> ForeignError >>> pure) (parseVersion v)))
 
 -- Decode JSON packages in the form:
 -- [{"purescript-foo":["0.1.0",...]},...]
@@ -119,8 +138,8 @@ jsonDecodePursuitPackages = parseJSON >=> readArray >=> traverse go
 -- Yes, I know it's silly to have two different formats.
 jsonDecodePursuitPackages2 :: String -> Aff _ (Array (Tuple String (Array Version)))
 jsonDecodePursuitPackages2 json = do
-  f <- rightOrThrow (parseJSON json)
-  let pkgs = List.toUnfoldable (StrMap.toList (coerceStrMap f))
+  f <- rightOrThrow (runExcept (parseJSON json))
+  let pkgs = StrMap.toUnfoldable (coerceStrMap f)
   pure (map (\(Tuple p vs) -> Tuple p (Array.mapMaybe tryParse vs)) pkgs)
 
   where
@@ -146,7 +165,7 @@ getAllPursuitPackages = do
 -- (see logAllPursuitPackages)
 restorePursuitPackages = do
   json <- readTextFile UTF8 "out.json"
-  pkgs <- rightOrThrow (jsonDecodePursuitPackages json)
+  pkgs <- rightOrThrow (runExcept (jsonDecodePursuitPackages json))
   submitAll pkgs
 
 submitAll :: Array (Tuple String (Array Version)) -> Aff _ Unit
@@ -166,7 +185,7 @@ submitAll pkgs = do
 -- versions of packages which are on Bower, but have not yet been uploaded to
 -- Pursuit.
 fixMissing = do
-  pkgList <- getPackageList
+  pkgList <- map (split (Pattern "\n")) (readTextFile UTF8 "packages.txt")
   error (show (length pkgList) <> " packages to process")
 
   missing <- traverse (\pkg -> Tuple pkg <$> getMissing pkg) pkgList
@@ -186,7 +205,7 @@ getPackageList :: Aff _ (Array String)
 getPackageList = do
   resp <- affjax $ defaultRequest
                     { url     = "https://pursuit.purescript.org/packages"
-                    , headers = [ Accept (MimeType "application/json") ]
+                    , headers = [ Accept (MediaType "application/json") ]
                     }
   readOrThrow resp.response
 
@@ -208,7 +227,7 @@ getPursuitVersions :: String -> Aff _ (Array Version)
 getPursuitVersions pkg = do
   resp <- affjax $ defaultRequest
                     { url     = availableVersionsUrl pkg
-                    , headers = [ Accept (MimeType "application/json") ]
+                    , headers = [ Accept (MediaType "application/json") ]
                     }
   arr <- readOrThrow resp.response
   error ("getting available versions: " <> pkg)
@@ -230,13 +249,13 @@ getPursuitVersions pkg = do
 getBowerVersions :: String -> Aff _ (Array Version)
 getBowerVersions pkg = flip catchError (\(_ :: Exception.Error) -> pure []) do
   json <- run "bower" ["info", pkg, "--json"]
-  versions <- rightOrThrow (parseJSON json) >>= readProp' "versions"
+  versions <- rightOrThrow (runExcept (parseJSON json)) >>= readProp' "versions"
   rightOrThrow $ traverse parseVersion versions
 
 checkDetails :: PackageDetails -> Aff _ (Array Version)
 checkDetails pkg = do
   earliest <- rightOrThrow (min pkg.pursuitVersions)
-  let bowers = filter (>= earliest) pkg.bowerVersions
+  let bowers = filter (_ >= earliest) pkg.bowerVersions
   pure $ bowers \\ pkg.pursuitVersions
   where
   min arr =
@@ -256,8 +275,9 @@ trySubmit pkg vers = do
   _ <- gitCheckout (showVersion vers) <|> gitCheckout ("v" <> showVersion vers)
   _ <- bowerInstall
   -- prevent failures from dirty working trees after 'bower install'
-  _ <- writeTextFile UTF8 (tmpdir <> "/.git/info/exclude") "/bower_components"
-  json <- pscPublish
+  _ <- writeTextFile UTF8 (tmpdir <> "/.git/info/exclude") "/bower_components\nresolutions.json"
+  _ <- writeResolutions
+  json <- pursPublish
   home <- envHome
   token <- readTextFile UTF8 (home <> "/.pulp/github-oauth-token")
   pursuitSubmit token json
@@ -266,12 +286,16 @@ trySubmit pkg vers = do
   gitClone repo dir = run "git" ["clone", repo, dir]
   gitCheckout tag = run "git" ["checkout", tag]
   bowerInstall = run "bower" ["install"]
-  pscPublish = run "psc-publish" []
+  writeResolutions =
+    run "bower" ["list", "--json", "--offline"]
+    >>= writeTextFile UTF8 "resolutions.json"
+  pursPublish =
+    run "purs" ["publish", "--manifest", "bower.json", "--resolutions", "resolutions.json"]
   pursuitSubmit token json = do
     r <- affjax $ defaultRequest
           { url = "https://pursuit.purescript.org/packages"
-          , method = POST
-          , headers = [ Accept (MimeType "application/json")
+          , method = Left POST
+          , headers = [ Accept (MediaType "application/json")
                       , RequestHeader "Authorization" ("token " <> token)
                       ]
           , content = Just json
@@ -287,7 +311,7 @@ trySubmit pkg vers = do
 getRepository :: String -> Version -> Aff _ String
 getRepository pkg vers = do
   json <- run "bower" ["info", pkg <> "#" <> showVersion vers, "--json"]
-  rightOrThrow (parseJSON json) >>= readProp' "repository" >>= readProp' "url"
+  rightOrThrow (runExcept (parseJSON json)) >>= readProp' "repository" >>= readProp' "url"
 
 -- | Run a command and args, and get stdout.
 run :: String -> Array String -> Aff _ String
@@ -313,14 +337,14 @@ err :: forall a. String -> Aff _ a
 err = throwError <<< Exception.error
 
 rightOrThrow :: forall a b. (Show a) => Either a b -> Aff _ b
-rightOrThrow = either (err <<< ("rightOrThrow: " <>) <<< show) pure
+rightOrThrow = either (err <<< ("rightOrThrow: " <> _) <<< show) pure
 
-readOrThrow :: forall a. (IsForeign a) => Foreign -> Aff _ a
-readOrThrow = rightOrThrow <<< read
+readOrThrow :: forall a. Decode a => Foreign -> Aff _ a
+readOrThrow = rightOrThrow <<< runExcept <<< decode
 
-readProp' :: forall a. (IsForeign a) => String -> Foreign -> Aff _ a
+readProp' :: forall a. Decode a => String -> Foreign -> Aff _ a
 readProp' prop f =
-  case readProp prop f of
+  case runExcept (readProp prop f >>= decode) of
     Right val -> pure val
     Left e -> err ("readProp': failed to read " <> prop <> ": " <> show e)
 
